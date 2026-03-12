@@ -92,6 +92,7 @@ void moveLine(int x1, int y1, int x2, int y2, float speed);
 void s_up();
 void s_down();
 int sensor();
+void calibration();
 void moveToPoint(float x_mm, float y_mm, float speed);
 void drawCircle(int centerX_mm, int centerY_mm, int radius_mm, float speed, int segments = 0);
 void program1();
@@ -591,30 +592,35 @@ void drawRotatedRectangle(float centerX, float centerY, float width, float heigh
   s_up();
 }
 
-
 void calibration(){
-  moveBoth(999, 0, 6000, 0);
-  while(!isBothMoveComplete){
+  moveBoth(999, 0, 2000, 0);
+  while(!isBothMoveComplete()){
     delay(1);
-    if (sensor() < 50){
+    if (sensor() < 30){
       stopBoth();
       break;
     }
   }
-  moveBoth(3, 0, 6000, 0);
-  while(!isBothMoveComplete){
+  delay(100);
+  moveBoth(3, 0, 3000, 0);
+  while(!isBothMoveComplete()){
     delay(1);
   }
-  moveBoth(999, 0, 6000, 0);
-  while(!isBothMoveComplete){
+  moveBoth(999, 0, 2000, 0);
+  while(!isBothMoveComplete()){
     delay(1);
     if (sensor() > 50){
       stopBoth();
       break;
     }
   }
+  delay(100);
+  moveBoth(3, 0, 3000, 0);
+  while(!isBothMoveComplete()){
+    delay(1);
+  }
+  delay(1000);
 }
-
 
 ISR(TIMER2_COMPA_vect) {
   static unsigned long stepStartTimeX = 0;
