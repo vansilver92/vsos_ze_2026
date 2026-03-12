@@ -591,6 +591,31 @@ void drawRotatedRectangle(float centerX, float centerY, float width, float heigh
   s_up();
 }
 
+
+void calibration(){
+  moveBoth(999, 0, 6000, 0);
+  while(!isBothMoveComplete){
+    delay(1);
+    if (sensor() < 50){
+      stopBoth();
+      break;
+    }
+  }
+  moveBoth(3, 0, 6000, 0);
+  while(!isBothMoveComplete){
+    delay(1);
+  }
+  moveBoth(999, 0, 6000, 0);
+  while(!isBothMoveComplete){
+    delay(1);
+    if (sensor() > 50){
+      stopBoth();
+      break;
+    }
+  }
+}
+
+
 ISR(TIMER2_COMPA_vect) {
   static unsigned long stepStartTimeX = 0;
   static unsigned long stepStartTimeY = 0;
@@ -1109,6 +1134,7 @@ void program11() {
 
 void loop() {
   s_up();
+  calibration();
   switch (selectedProgram) {
     case 1: program1(); break;
     case 2: program2(); break;
