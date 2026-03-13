@@ -1016,7 +1016,7 @@ void program5() {
         sum += 1;
         digitalWrite(led, HIGH);
         updateDisplay();
-      }
+      } 
       delay(1);
       digitalWrite(led, LOW);
     }
@@ -1073,6 +1073,7 @@ void program5() {
   alpha = atan2(10, firstY - secondY) * 180 / M_PI;
   updateDisplay();
   drawRotatedRectangle(getPositionX()-51, getPositionY(), 100, 62, alpha, 5000, 0, 1);
+  jfjhja
 
 }
 
