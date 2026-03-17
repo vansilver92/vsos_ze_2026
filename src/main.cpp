@@ -23,7 +23,7 @@ int selectedProgram = 1;
 
 #define STEP_PIN_X1 11
 #define DIR_PIN_X1 9
-#define STEP_PIN_X2 15
+#define STEP_PIN_X2 17
 #define DIR_PIN_X2 13
 #define STEP_PIN_Y 7
 #define DIR_PIN_Y 5
@@ -81,6 +81,28 @@ double secondX = 0;
 double secondY = 0;
 float alpha = 0;
 
+// ========== ПЕРЕМЕННЫЕ ДЛЯ ПОИСКА ОКРУЖНОСТИ ==========
+// Union для преобразования байтов в float (little-endian)
+union FloatUnion {
+  float value;
+  uint8_t bytes[4];
+};
+
+// Функция CRC8 (XOR всех байтов)
+uint8_t crc8(uint8_t *data, uint8_t len) {
+  uint8_t crc = 0;
+  for (uint8_t i = 0; i < len; i++) {
+    crc ^= data[i];
+  }
+  return crc;
+}
+
+// Результаты поиска окружности
+float circleX0 = 0; // Центр окружности по X
+float circleY0 = 0; // Центр окружности по Y
+float circleR = 0;  // Радиус окружности (всегда положительный)
+// ====================================================
+
 void setupTimer2();
 void setSpeedX(int stepsPerSecond);
 void setSpeedY(int stepsPerSecond);
@@ -110,8 +132,17 @@ int selectProgram();
 void drawProgramScreen(int prog);
 void updateDisplay();
 
+// ========== ПРОТОТИПЫ ФУНКЦИЙ ДЛЯ ПОИСКА ОКРУЖНОСТИ ==========
+void sendX(float x);
+int receiveY(float &y1, float &y2);
+void findCircle();
+void analyzeResults(float xVals[], float yVals[][2], int counts[], int numSamples);
+// =============================================================
+
 void setup() {
   Serial.begin(9600);
+  Serial3.begin(9600); // Для связи с устройством
+  
   if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
     for (;;)
       ;
@@ -206,7 +237,6 @@ void updateDisplay() {
   display.println(selectedProgram);
   display.setCursor(0, 16);
   display.print("X: ");
-  // display.println(getPositionX(), 1);
   display.println(alpha, 1);
   display.setCursor(0, 32);
   display.print("Y: ");
@@ -403,12 +433,6 @@ void stopBoth() {
   interrupts();
 }
 
-void moveLine(int x1, int y1, int x2, int y2, float speed) {
-  int dx = x2 - x1;
-  int dy = y2 - y1;
-  moveBoth(dx, dy, speed, 0);
-}
-
 void drawCircle(int centerX_mm, int centerY_mm, int radius_mm, float speed, int segments) {
   long cx = (long)centerX_mm * (long)koef_x;
   long cy = (long)centerY_mm * (long)koef_y;
@@ -470,12 +494,8 @@ int sensor() {
 void moveToPoint(float x_mm, float y_mm, float speed) {
   float dx = x_mm - getPositionX();
   float dy = y_mm - getPositionY();
-  if (fabs(dx) < 0.01 && fabs(dy) < 0.01) return;
 
-  int idx = (int)(dx + (dx > 0 ? 0.5 : -0.5));
-  int idy = (int)(dy + (dy > 0 ? 0.5 : -0.5));
-
-  moveBoth(idx, idy, speed, 0);
+  moveBoth(dx, dy, speed, 0);
 
   while (isBothMoveComplete() == false) {
     delay(1);
@@ -593,7 +613,7 @@ void drawRotatedRectangle(float centerX, float centerY, float width, float heigh
 }
 
 void calibration(){
-  moveBoth(999, 0, 2000, 0);
+  moveBoth(999, 999, 20000, 0);
   while(!isBothMoveComplete()){
     delay(1);
     if (sensor() < 30){
@@ -602,23 +622,34 @@ void calibration(){
     }
   }
   delay(100);
-  moveBoth(3, 0, 3000, 0);
+  moveBoth(2, 0, 3000, 0);
   while(!isBothMoveComplete()){
     delay(1);
   }
   moveBoth(999, 0, 2000, 0);
   while(!isBothMoveComplete()){
     delay(1);
-    if (sensor() > 50){
+    if (sensor() > 70){
       stopBoth();
       break;
     }
   }
   delay(100);
-  moveBoth(3, 0, 3000, 0);
+  currentPositionX = -80;
+  moveBoth(10, 0, 3000, 0);
   while(!isBothMoveComplete()){
     delay(1);
   }
+  moveBoth(0, -999, 10000, 0);
+  while(!isBothMoveComplete()){
+    delay(1);
+    if (sensor() < 30){
+      stopBoth();
+      break;
+    }
+  }
+  currentPositionY = -80;
+  moveBoth(70, 80, 20000, 0);
   delay(1000);
 }
 
@@ -733,6 +764,367 @@ void s_down() {
   servo.write(145);
   delay(400);
 }
+
+// ========== ФУНКЦИИ ДЛЯ ПОИСКА ОКРУЖНОСТИ ==========
+
+// Отправка X координаты на устройство
+void sendX(float x) {
+  uint8_t packet[7]; // AA BB + 4 байта float + CRC
+  
+  packet[0] = 0xAA;
+  packet[1] = 0xBB;
+  
+  FloatUnion fu;
+  fu.value = x;
+  
+  // Little-endian: младший байт первый
+  packet[2] = fu.bytes[0];
+  packet[3] = fu.bytes[1];
+  packet[4] = fu.bytes[2];
+  packet[5] = fu.bytes[3];
+  
+  // CRC только от float данных (4 байта)
+  packet[6] = crc8(&packet[2], 4);
+  
+  Serial3.write(packet, 7);
+}
+
+// Получение ответа от устройства
+// Возвращает: количество полученных Y (0, 1, 2) или -1 при ошибке
+int receiveY(float &y1, float &y2) {
+  const int TIMEOUT = 100;
+  unsigned long startTime = millis();
+  
+  // Ждем заголовок 0xFF
+  while (millis() - startTime < TIMEOUT) {
+    if (Serial3.available() && Serial3.read() == 0xFF) {
+      break;
+    }
+  }
+  if (millis() - startTime >= TIMEOUT) return -2;
+  
+  // Ждем длину данных
+  startTime = millis();
+  while (millis() - startTime < TIMEOUT) {
+    if (Serial3.available()) {
+      uint8_t dataLen = Serial3.read();
+      
+      if (dataLen == 0) {
+        while (millis() - startTime < TIMEOUT) {
+          if (Serial3.available()) {
+            Serial3.read(); // CRC
+            return 0;
+          }
+        }
+      } 
+      else if (dataLen == 4) {
+        FloatUnion fu;
+        for (int i = 0; i < 4; i++) {
+          startTime = millis();
+          while (millis() - startTime < TIMEOUT) {
+            if (Serial3.available()) {
+              fu.bytes[i] = Serial3.read();
+              break;
+            }
+          }
+        }
+        
+        startTime = millis();
+        while (millis() - startTime < TIMEOUT) {
+          if (Serial3.available()) {
+            uint8_t crc = Serial3.read();
+            if (crc == crc8(fu.bytes, 4)) {
+              y1 = fu.value;
+              return 1;
+            } else {
+              return -1;
+            }
+          }
+        }
+      }
+      else if (dataLen == 8) {
+        FloatUnion fu1, fu2;
+        
+        for (int i = 0; i < 4; i++) {
+          startTime = millis();
+          while (millis() - startTime < TIMEOUT) {
+            if (Serial3.available()) {
+              fu1.bytes[i] = Serial3.read();
+              break;
+            }
+          }
+        }
+        
+        for (int i = 0; i < 4; i++) {
+          startTime = millis();
+          while (millis() - startTime < TIMEOUT) {
+            if (Serial3.available()) {
+              fu2.bytes[i] = Serial3.read();
+              break;
+            }
+          }
+        }
+        
+        startTime = millis();
+        while (millis() - startTime < TIMEOUT) {
+          if (Serial3.available()) {
+            uint8_t crc = Serial3.read();
+            uint8_t data[8];
+            memcpy(data, fu1.bytes, 4);
+            memcpy(data + 4, fu2.bytes, 4);
+            
+            if (crc == crc8(data, 8)) {
+              y1 = fu1.value;
+              y2 = fu2.value;
+              return 2;
+            } else {
+              return -1;
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  return -2;
+}
+
+// ========== НОВЫЙ АЛГОРИТМ ПОИСКА ОКРУЖНОСТИ ==========
+
+// Поиск параметров окружности
+void findCircle() {
+  const int NUM_SAMPLES = 50;
+  float xValues[NUM_SAMPLES];
+  float yIntersections[NUM_SAMPLES][2];
+  int intersectionCount[NUM_SAMPLES];
+  int sampleIndex = 0;
+  
+  Serial.println("Searching for circle...");
+  
+  // Сканируем X от -8 до 8 с шагом 0.3
+  for (float x = -8.0; x <= 8.0 && sampleIndex < NUM_SAMPLES; x += 0.3) {
+    
+    sendX(x);
+    delay(50);
+    
+    float y1, y2;
+    int result = receiveY(y1, y2);
+    
+    if (result >= 0) {
+      xValues[sampleIndex] = x;
+      
+      if (result == 0) {
+        intersectionCount[sampleIndex] = 0;
+        sampleIndex++;
+      }
+      else if (result == 1) {
+        yIntersections[sampleIndex][0] = y1;
+        intersectionCount[sampleIndex] = 1;
+        sampleIndex++;
+      }
+      else if (result == 2) {
+        // Сортируем Y, чтобы y1 был меньше y2
+        if (y1 < y2) {
+          yIntersections[sampleIndex][0] = y1;
+          yIntersections[sampleIndex][1] = y2;
+        } else {
+          yIntersections[sampleIndex][0] = y2;
+          yIntersections[sampleIndex][1] = y1;
+        }
+        intersectionCount[sampleIndex] = 2;
+        sampleIndex++;
+      }
+    }
+    
+    delay(50);
+  }
+  
+  Serial.print("Collected "); Serial.print(sampleIndex); Serial.println(" samples");
+  
+  // Анализируем полученные данные
+  analyzeResults(xValues, yIntersections, intersectionCount, sampleIndex);
+}
+
+// Анализ результатов для определения X0, Y0, R (НОВЫЙ АЛГОРИТМ)
+void analyzeResults(float xVals[], float yVals[][2], int counts[], int numSamples) {
+  
+  // Сначала соберем все точки с двумя пересечениями
+  int twoPointsCount = 0;
+  float twoPointsX[50], twoPointsY1[50], twoPointsY2[50];
+  
+  for (int i = 0; i < numSamples; i++) {
+    if (counts[i] == 2) {
+      twoPointsX[twoPointsCount] = xVals[i];
+      twoPointsY1[twoPointsCount] = yVals[i][0];
+      twoPointsY2[twoPointsCount] = yVals[i][1];
+      twoPointsCount++;
+    }
+  }
+  
+  Serial.print("Two-intersection points: "); Serial.println(twoPointsCount);
+  
+  // Если есть точки с двумя пересечениями
+  if (twoPointsCount >= 3) {
+    
+    // Метод 1: Используем свойство, что среднее арифметическое Y1 и Y2 = Y0
+    float sumY0 = 0;
+    for (int i = 0; i < twoPointsCount; i++) {
+      sumY0 += (twoPointsY1[i] + twoPointsY2[i]) / 2.0;
+    }
+    circleY0 = sumY0 / twoPointsCount;
+    
+    Serial.print("Estimated Y0: "); Serial.println(circleY0);
+    
+    // Метод 2: Для каждого X, разность Y1 и Y2 дает информацию о R и X0
+    // (y1 - y2)/2 = sqrt(R^2 - (x - X0)^2)
+    
+    // Создаем массив для хранения предполагаемых X0 от каждой пары точек
+    float x0Candidates[100];
+    int candidateCount = 0;
+    
+    for (int i = 0; i < twoPointsCount; i++) {
+      for (int j = i + 1; j < twoPointsCount; j++) {
+        float x1 = twoPointsX[i];
+        float x2 = twoPointsX[j];
+        float dy1 = (twoPointsY1[i] - twoPointsY2[i]) / 2.0;
+        float dy2 = (twoPointsY1[j] - twoPointsY2[j]) / 2.0;
+        
+        // Из уравнений:
+        // R^2 = (x1 - X0)^2 + dy1^2
+        // R^2 = (x2 - X0)^2 + dy2^2
+        // Приравниваем: (x1 - X0)^2 + dy1^2 = (x2 - X0)^2 + dy2^2
+        // (x1^2 - 2x1*X0 + X0^2) + dy1^2 = (x2^2 - 2x2*X0 + X0^2) + dy2^2
+        // x1^2 - 2x1*X0 + dy1^2 = x2^2 - 2x2*X0 + dy2^2
+        // -2x1*X0 + 2x2*X0 = x2^2 - x1^2 + dy2^2 - dy1^2
+        // 2X0(x2 - x1) = (x2^2 - x1^2) + (dy2^2 - dy1^2)
+        // X0 = [(x2^2 - x1^2) + (dy2^2 - dy1^2)] / [2(x2 - x1)]
+        
+        float numerator = (x2*x2 - x1*x1) + (dy2*dy2 - dy1*dy1);
+        float denominator = 2.0 * (x2 - x1);
+        
+        if (abs(denominator) > 0.001) {
+          float x0 = numerator / denominator;
+          
+          // Проверяем, что x0 в разумных пределах
+          if (x0 >= -10.0 && x0 <= 10.0) {
+            x0Candidates[candidateCount++] = x0;
+          }
+        }
+      }
+    }
+    
+    Serial.print("X0 candidates: "); Serial.println(candidateCount);
+    
+    // Находим наиболее часто встречающееся значение X0
+    if (candidateCount > 0) {
+      // Сортируем кандидатов
+      for (int i = 0; i < candidateCount - 1; i++) {
+        for (int j = i + 1; j < candidateCount; j++) {
+          if (x0Candidates[i] > x0Candidates[j]) {
+            float temp = x0Candidates[i];
+            x0Candidates[i] = x0Candidates[j];
+            x0Candidates[j] = temp;
+          }
+        }
+      }
+      
+      // Группируем близкие значения
+      float bestX0 = 0;
+      int maxFrequency = 0;
+      
+      int startIdx = 0;
+      for (int i = 0; i < candidateCount; i++) {
+        if (i == candidateCount - 1 || x0Candidates[i+1] - x0Candidates[i] > 0.5) {
+          int frequency = i - startIdx + 1;
+          if (frequency > maxFrequency) {
+            maxFrequency = frequency;
+            // Среднее значение в этой группе
+            float sum = 0;
+            for (int k = startIdx; k <= i; k++) {
+              sum += x0Candidates[k];
+            }
+            bestX0 = sum / frequency;
+          }
+          startIdx = i + 1;
+        }
+      }
+      
+      circleX0 = bestX0;
+      Serial.print("Selected X0: "); Serial.println(circleX0);
+      
+      // Теперь вычисляем R как среднее по всем точкам
+      float sumR = 0;
+      int countR = 0;
+      
+      for (int i = 0; i < twoPointsCount; i++) {
+        float x = twoPointsX[i];
+        float dx = x - circleX0;
+        
+        // Вычисляем R из этой точки
+        float r1 = sqrt(dx*dx + (twoPointsY1[i] - circleY0)*(twoPointsY1[i] - circleY0));
+        float r2 = sqrt(dx*dx + (twoPointsY2[i] - circleY0)*(twoPointsY2[i] - circleY0));
+        
+        sumR += (r1 + r2) / 2.0;
+        countR++;
+      }
+      
+      circleR = sumR / countR;
+      
+      Serial.print("Calculated R: "); Serial.println(circleR);
+      return;
+    }
+  }
+  
+  // Если не получилось с двумя пересечениями, используем точки касания
+  int touchCount = 0;
+  float touchX[50], touchY[50];
+  
+  for (int i = 0; i < numSamples; i++) {
+    if (counts[i] == 1) {
+      touchX[touchCount] = xVals[i];
+      touchY[touchCount] = yVals[i][0];
+      touchCount++;
+    }
+  }
+  
+  Serial.print("Touch points: "); Serial.println(touchCount);
+  
+  if (touchCount >= 2) {
+    // Для точек касания: Y0 = Y точки касания
+    float sumY = 0;
+    for (int i = 0; i < touchCount; i++) {
+      sumY += touchY[i];
+    }
+    circleY0 = sumY / touchCount;
+    
+    // X0 - среднее всех X
+    float sumX = 0;
+    for (int i = 0; i < touchCount; i++) {
+      sumX += touchX[i];
+    }
+    circleX0 = sumX / touchCount;
+    
+    // Радиус - среднее расстояние от X0
+    float sumR = 0;
+    for (int i = 0; i < touchCount; i++) {
+      sumR += abs(touchX[i] - circleX0);
+    }
+    circleR = sumR / touchCount;
+    
+    Serial.print("From touch: X0="); Serial.print(circleX0);
+    Serial.print(", Y0="); Serial.print(circleY0);
+    Serial.print(", R="); Serial.println(circleR);
+    return;
+  }
+  
+  // Если ничего не нашлось
+  circleX0 = 0;
+  circleY0 = 0;
+  circleR = 5;
+  Serial.println("Using default values");
+}
+
+// ====================================================
 
 void program1() {
   s_up();
@@ -1006,6 +1398,7 @@ void program4() {
 }
 
 void program5() {  
+
   for (int i = 0; i <= 16; ++i) {
     moveBoth(210, 0, 3500, 0);
     while (!isBothMoveComplete()) {
@@ -1073,40 +1466,48 @@ void program5() {
   alpha = atan2(10, firstY - secondY) * 180 / M_PI;
   updateDisplay();
   drawRotatedRectangle(getPositionX()-51, getPositionY(), 100, 62, alpha, 5000, 0, 1);
-  jfjhja
 
 }
 
+int posArray[] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+bool binaryNum[] = {0, 0, 0, 0, 0, 0, 0, 0, 0}; 
+int oldNum = 0;
+int sensorIndications[] = {0, 0, 0, 0, 0, 0};
+int sensorPos1 = 0;
+int sensorPos2 = 0;
+
 void program6() {
-  setSpeedX(1000);
-  setSpeedY(3000);
-  moveBoth(30, 20, 1000, 0);
-  while (!isBothMoveComplete()) {
-    updateDisplay();
+  moveBoth(17, 0, 4000, 0);
+  while(!isBothMoveComplete()){
     delay(1);
   }
-  setSpeedX(3000);
-  setSpeedY(1000);
-  moveBoth(-30, -20, 1000, 0);
-  while (!isBothMoveComplete()) {
-    updateDisplay();
-    delay(1);
+  for(int a = 0; a <= 3; ++a){
+    moveBoth(40, 0, 4000, 0);
+    while(!isBothMoveComplete()){
+      delay(1);
+    }
+    sensorIndications[a - 1] = sensor() < 50 ? 1 : 0;
+    moveBoth(10, 0, 4000, 0);
+    while(!isBothMoveComplete()){
+      delay(1);
+    }
+    sensorIndications[a - 1] += sensor() < 50 ? 2 : 0;
+}
+
+  for (int i = 0; i <= 512; ++i){
+    oldNum = i;
+    for (int n = 0; n <= 9; ++n){
+      binaryNum[n - 1] = oldNum % 2;
+      oldNum = floor(oldNum/2);
+      Serial.print(binaryNum[n - 1]);
+    }
+    Serial.println();
   }
+  delay(100000);
 }
 
 void program7() {
-  setSpeedY(500);
-  moveTicksY(50);
-  while (!isMoveCompleteY()) {
-    updateDisplay();
-    delay(1);
-  }
-  setSpeedY(4000);
-  moveTicksY(-50);
-  while (!isMoveCompleteY()) {
-    updateDisplay();
-    delay(1);
-  }
+  delay(1000000);
 }
 
 void program8() {
@@ -1118,8 +1519,27 @@ void program8() {
 }
 
 void program9() {
-  while (1) {
-    // Empty loop
+  // Поиск параметров окружности и рисование
+  findCircle();
+  
+  // Перемещаемся в центр найденной окружности
+  Serial.println(circleX0);
+  Serial.println(circleY0);
+  delay(100000);
+  moveBoth(circleX0*10 - 51, circleY0*10, 4000, 0);
+  while(!isBothMoveComplete()){
+    delay(1);
+  }
+  
+  // Рисуем окружность с найденными параметрами
+  s_down();
+  delay(1000);
+  drawCircle(getPositionX(), getPositionY(), circleR*10, 4000, 200);
+  s_up();
+  
+  // Бесконечный цикл после выполнения
+  while(1) {
+    delay(1000);
   }
 }
 
