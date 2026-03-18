@@ -81,14 +81,11 @@ double secondX = 0;
 double secondY = 0;
 float alpha = 0;
 
-// ========== ПЕРЕМЕННЫЕ ДЛЯ ПОИСКА ОКРУЖНОСТИ ==========
-// Union для преобразования байтов в float (little-endian)
 union FloatUnion {
   float value;
   uint8_t bytes[4];
 };
 
-// Функция CRC8 (XOR всех байтов)
 uint8_t crc8(uint8_t *data, uint8_t len) {
   uint8_t crc = 0;
   for (uint8_t i = 0; i < len; i++) {
@@ -97,11 +94,9 @@ uint8_t crc8(uint8_t *data, uint8_t len) {
   return crc;
 }
 
-// Результаты поиска окружности
-float circleX0 = 0; // Центр окружности по X
-float circleY0 = 0; // Центр окружности по Y
-float circleR = 0;  // Радиус окружности (всегда положительный)
-// ====================================================
+float circleX0 = 0; 
+float circleY0 = 0; 
+float circleR = 0;  
 
 void setupTimer2();
 void setSpeedX(int stepsPerSecond);
@@ -170,7 +165,7 @@ void setup() {
   servo.attach(3);
   s_up();
 
-  selectedProgram = selectProgram();
+  
   display.clearDisplay();
   updateDisplay();
   setupTimer2();
@@ -651,6 +646,88 @@ void calibration(){
   currentPositionY = 0;
   // moveBoth(70, 80, 20000, 0);
   delay(1000);
+}
+
+void moveSin(float startX_mm, float startY_mm, float width_mm, float amplitude_mm, int periods, float speed) {
+  long startX_steps = (long)(startX_mm * koef_x);
+  long startY_steps = (long)(startY_mm * koef_y);
+  int segments = 1000;
+  
+  s_up();
+  long dx_start = startX_steps - currentPositionX;
+  long dy_start = startY_steps - currentPositionY;
+  if (dx_start != 0 || dy_start != 0) {
+    moveBoth(dx_start, dy_start, speed, 1);
+    while (!isBothMoveComplete()) delay(1);
+  }
+  
+  s_down();
+  
+  long prevX = startX_steps;
+  long prevY = startY_steps;
+  
+  for (int i = 1; i <= segments; i++) {
+    float t = (float)i / segments;
+    float x_mm = startX_mm + t * width_mm;
+    float y_mm = startY_mm + amplitude_mm * sin(2 * PI * periods * t);
+    
+    long x_steps = (long)(x_mm * koef_x);
+    long y_steps = (long)(y_mm * koef_y);
+    
+    long dx = x_steps - prevX;
+    long dy = y_steps - prevY;
+    
+    moveBoth(dx, dy, speed, 1);
+    while (!isBothMoveComplete()) delay(1);
+    
+    prevX = x_steps;
+    prevY = y_steps;
+  }
+  
+  s_up();
+}
+
+void moveParabola(float vertexX_mm, float vertexY_mm, float a, float width_mm, float speed) {
+  float x_left = vertexX_mm - width_mm / 2.0;
+  float x_right = vertexX_mm + width_mm / 2.0;
+  
+  long leftX_steps = (long)(x_left * koef_x);
+  long leftY_steps = (long)((a * (x_left - vertexX_mm) * (x_left - vertexX_mm) + vertexY_mm) * koef_y);
+  
+  int segments = 1000;
+  
+  s_up();
+  long dx_start = leftX_steps - currentPositionX;
+  long dy_start = leftY_steps - currentPositionY;
+  if (dx_start != 0 || dy_start != 0) {
+    moveBoth(dx_start, dy_start, speed, 1);
+    while (!isBothMoveComplete()) delay(1);
+  }
+  
+  s_down();
+  
+  long prevX = leftX_steps;
+  long prevY = leftY_steps;
+  
+  for (int i = 1; i <= segments; i++) {
+    float t = (float)i / segments;
+    float x_mm = x_left + t * width_mm;
+    float y_mm = a * (x_mm - vertexX_mm) * (x_mm - vertexX_mm) + vertexY_mm;
+    
+    long x_steps = (long)(x_mm * koef_x);
+    long y_steps = (long)(y_mm * koef_y);
+    
+    long dx = x_steps - prevX;
+    long dy = y_steps - prevY;
+    
+    moveBoth(dx, dy, speed, 1);
+    while (!isBothMoveComplete()) delay(1);
+    
+    prevX = x_steps;
+    prevY = y_steps;
+  }
+  
+  s_up();
 }
 
 ISR(TIMER2_COMPA_vect) {
@@ -1552,7 +1629,8 @@ delay(5000);
 }
 
 void program7() {
-  delay(1000000);
+  // moveSin(getPositionX(), getPositionY(), 50, 10, 2, 10000);
+  moveParabola(100.0, 100.0, 0.03, 90.0, 5000);
 }
 
 void program8() {
@@ -1601,8 +1679,9 @@ void program11() {
 }
 
 void loop() {
+  selectedProgram = selectProgram();
   s_up();
-  calibration();
+  // calibration();
   switch (selectedProgram) {
     case 1: program1(); break;
     case 2: program2(); break;
