@@ -23,7 +23,7 @@ int selectedProgram = 1;
 
 #define STEP_PIN_X1 11
 #define DIR_PIN_X1 9
-#define STEP_PIN_X2 17
+#define STEP_PIN_X2 15
 #define DIR_PIN_X2 13
 #define STEP_PIN_Y 7
 #define DIR_PIN_Y 5
@@ -237,7 +237,7 @@ void updateDisplay() {
   display.println(selectedProgram);
   display.setCursor(0, 16);
   display.print("X: ");
-  display.println(alpha, 1);
+  display.println(getPositionX(), 1);
   display.setCursor(0, 32);
   display.print("Y: ");
   display.println(getPositionY(), 1);
@@ -454,7 +454,7 @@ void drawCircle(int centerX_mm, int centerY_mm, int radius_mm, float speed, int 
   long dx_start = startX - currentPositionX;
   long dy_start = startY - currentPositionY;
   if (dx_start != 0 || dy_start != 0) {
-    moveBoth(dx_start, dy_start, speed, 1);
+    moveBoth(dx_start, dy_start, speed/2, 1);
     while (!isBothMoveComplete()) {
       updateDisplay();
       delay(1);
@@ -635,12 +635,12 @@ void calibration(){
     }
   }
   delay(100);
-  currentPositionX = -80;
+  currentPositionX = 0;
   moveBoth(10, 0, 3000, 0);
   while(!isBothMoveComplete()){
     delay(1);
   }
-  moveBoth(0, -999, 10000, 0);
+  moveBoth(0, -999, 20000, 0);
   while(!isBothMoveComplete()){
     delay(1);
     if (sensor() < 30){
@@ -648,8 +648,8 @@ void calibration(){
       break;
     }
   }
-  currentPositionY = -80;
-  moveBoth(70, 80, 20000, 0);
+  currentPositionY = 0;
+  // moveBoth(70, 80, 20000, 0);
   delay(1000);
 }
 
@@ -765,11 +765,8 @@ void s_down() {
   delay(400);
 }
 
-// ========== ФУНКЦИИ ДЛЯ ПОИСКА ОКРУЖНОСТИ ==========
-
-// Отправка X координаты на устройство
 void sendX(float x) {
-  uint8_t packet[7]; // AA BB + 4 байта float + CRC
+  uint8_t packet[7];
   
   packet[0] = 0xAA;
   packet[1] = 0xBB;
@@ -777,20 +774,16 @@ void sendX(float x) {
   FloatUnion fu;
   fu.value = x;
   
-  // Little-endian: младший байт первый
   packet[2] = fu.bytes[0];
   packet[3] = fu.bytes[1];
   packet[4] = fu.bytes[2];
   packet[5] = fu.bytes[3];
   
-  // CRC только от float данных (4 байта)
   packet[6] = crc8(&packet[2], 4);
   
   Serial3.write(packet, 7);
 }
 
-// Получение ответа от устройства
-// Возвращает: количество полученных Y (0, 1, 2) или -1 при ошибке
 int receiveY(float &y1, float &y2) {
   const int TIMEOUT = 100;
   unsigned long startTime = millis();
@@ -889,9 +882,6 @@ int receiveY(float &y1, float &y2) {
   return -2;
 }
 
-// ========== НОВЫЙ АЛГОРИТМ ПОИСКА ОКРУЖНОСТИ ==========
-
-// Поиск параметров окружности
 void findCircle() {
   const int NUM_SAMPLES = 50;
   float xValues[NUM_SAMPLES];
@@ -941,11 +931,9 @@ void findCircle() {
   
   Serial.print("Collected "); Serial.print(sampleIndex); Serial.println(" samples");
   
-  // Анализируем полученные данные
   analyzeResults(xValues, yIntersections, intersectionCount, sampleIndex);
 }
 
-// Анализ результатов для определения X0, Y0, R (НОВЫЙ АЛГОРИТМ)
 void analyzeResults(float xVals[], float yVals[][2], int counts[], int numSamples) {
   
   // Сначала соберем все точки с двумя пересечениями
@@ -1122,9 +1110,7 @@ void analyzeResults(float xVals[], float yVals[][2], int counts[], int numSample
   circleY0 = 0;
   circleR = 5;
   Serial.println("Using default values");
-}
-
-// ====================================================
+} 
 
 void program1() {
   s_up();
@@ -1475,35 +1461,94 @@ int oldNum = 0;
 int sensorIndications[] = {0, 0, 0, 0, 0, 0};
 int sensorPos1 = 0;
 int sensorPos2 = 0;
+int pointsKordsX[] = {106, 106, 106, 76, 76, 76, 46, 46, 46};
+int pointsKordsY[] = {50, 80, 110, 50, 80, 110, 50, 80, 110};
+int sumPoints = 0;
 
 void program6() {
-  moveBoth(17, 0, 4000, 0);
+  moveBoth(12, 30, 15000, 0);
   while(!isBothMoveComplete()){
     delay(1);
   }
-  for(int a = 0; a <= 3; ++a){
-    moveBoth(40, 0, 4000, 0);
+  // delay(2000);
+  for(int a = 0; a <= 2; ++a){
+    moveBoth(20, 0, 4000, 0);
     while(!isBothMoveComplete()){
       delay(1);
     }
-    sensorIndications[a - 1] = sensor() < 50 ? 1 : 0;
+    // delay(500);
+    sensorIndications[a] = sensor() < 50 ? 1 : 0;
     moveBoth(10, 0, 4000, 0);
     while(!isBothMoveComplete()){
       delay(1);
     }
-    sensorIndications[a - 1] += sensor() < 50 ? 2 : 0;
+    // delay(500);
+
+    sensorIndications[a] += sensor() < 50 ? 2 : 0;
+    Serial.println(sensorIndications[a]);
 }
+
+moveBoth(27, -9, 15000, 0);
+  while(!isBothMoveComplete()){
+    delay(1);
+  }
+  // delay(2000);
+  for(int a = 3; a <= 5; ++a){
+    moveBoth(-10, 29, 15000, 0);
+    while(!isBothMoveComplete()){
+      delay(1);
+    }
+    // delay(500);
+    sensorIndications[a] = sensor() < 50 ? 1 : 0;
+    moveBoth(10, 0, 4000, 0);
+    while(!isBothMoveComplete()){
+      delay(1);
+    }
+    // delay(500);
+
+    sensorIndications[a] += sensor() < 50 ? 2 : 0;
+    Serial.println(sensorIndications[a]);
+}
+Serial.println();
+for(int a = 0; a <= 5; ++a){
+  Serial.print(sensorIndications[a]);
+}
+delay(5000);
+
 
   for (int i = 0; i <= 512; ++i){
     oldNum = i;
-    for (int n = 0; n <= 9; ++n){
-      binaryNum[n - 1] = oldNum % 2;
+    for (int n = 0; n <= 8; ++n){
+      binaryNum[n] = oldNum % 2;
       oldNum = floor(oldNum/2);
-      Serial.print(binaryNum[n - 1]);
+      Serial.print(binaryNum[n]);
     }
     Serial.println();
+    // // delay(1000);
+    if (sensorIndications[0] == (binaryNum[6] + binaryNum[7] + binaryNum[8])){      
+      if (sensorIndications[1] == (binaryNum[3] + binaryNum[4] + binaryNum[5])){
+        if (sensorIndications[2] == (binaryNum[0] + binaryNum[1] + binaryNum[2])){
+          if (sensorIndications[3] == (binaryNum[0] + binaryNum[3] + binaryNum[6])){
+            if (sensorIndications[4] == (binaryNum[1] + binaryNum[4] + binaryNum[7])){
+              if (sensorIndications[5] == (binaryNum[2] + binaryNum[5] + binaryNum[8])){
+                delay(1000);
+                for(int i = 0; i <= 8; ++i){
+                  if (binaryNum[i] == 1){
+                  moveToPoint(pointsKordsX[i]-51, pointsKordsY[i], 5000);
+                  drawCircle(getPositionX(), getPositionY(), 3, 10000, 100);
+                  delay(500);
+                }
+              }
+              break;
+              delay(1000000);
+              }
+            }
+          }
+        }
+      }
+    }
   }
-  delay(100000);
+
 }
 
 void program7() {
@@ -1519,10 +1564,8 @@ void program8() {
 }
 
 void program9() {
-  // Поиск параметров окружности и рисование
   findCircle();
   
-  // Перемещаемся в центр найденной окружности
   Serial.println(circleX0);
   Serial.println(circleY0);
   delay(100000);
@@ -1531,13 +1574,11 @@ void program9() {
     delay(1);
   }
   
-  // Рисуем окружность с найденными параметрами
   s_down();
   delay(1000);
   drawCircle(getPositionX(), getPositionY(), circleR*10, 4000, 200);
   s_up();
   
-  // Бесконечный цикл после выполнения
   while(1) {
     delay(1000);
   }
