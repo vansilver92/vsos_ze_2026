@@ -81,6 +81,9 @@ double secondX = 0;
 double secondY = 0;
 float alpha = 0;
 
+float side = 0;
+float r = 0;
+
 union FloatUnion {
   float value;
   uint8_t bytes[4];
@@ -127,16 +130,14 @@ int selectProgram();
 void drawProgramScreen(int prog);
 void updateDisplay();
 
-// ========== ПРОТОТИПЫ ФУНКЦИЙ ДЛЯ ПОИСКА ОКРУЖНОСТИ ==========
 void sendX(float x);
 int receiveY(float &y1, float &y2);
 void findCircle();
 void analyzeResults(float xVals[], float yVals[][2], int counts[], int numSamples);
-// =============================================================
 
 void setup() {
   Serial.begin(9600);
-  Serial3.begin(9600); // Для связи с устройством
+  Serial3.begin(9600);
   
   if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
     for (;;)
@@ -167,7 +168,6 @@ void setup() {
 
   
   display.clearDisplay();
-  updateDisplay();
   setupTimer2();
 }
 
@@ -232,10 +232,10 @@ void updateDisplay() {
   display.println(selectedProgram);
   display.setCursor(0, 16);
   display.print("X: ");
-  display.println(getPositionX(), 1);
+  display.println(r, 1);
   display.setCursor(0, 32);
   display.print("Y: ");
-  display.println(getPositionY(), 1);
+  display.println(side, 1);
   display.setCursor(0, 48);
   if (isMovingX || isMovingY) {
     display.print("Moving...");
@@ -648,6 +648,32 @@ void calibration(){
   delay(1000);
 }
 
+void calibrationX(){
+  moveBoth(999, 999, 20000, 0);
+  while(!isBothMoveComplete()){
+    delay(1);
+    if (sensor() < 30){
+      stopBoth();
+      break;
+    }
+  }
+  delay(100);
+  moveBoth(2, 0, 3000, 0);
+  while(!isBothMoveComplete()){
+    delay(1);
+  }
+  moveBoth(999, 0, 2000, 0);
+  while(!isBothMoveComplete()){
+    delay(1);
+    if (sensor() > 70){
+      stopBoth();
+      break;
+    }
+  }
+  delay(100);
+  currentPositionX = 0;
+}
+
 void moveSin(float startX_mm, float startY_mm, float width_mm, float amplitude_mm, int periods, float speed) {
   long startX_steps = (long)(startX_mm * koef_x);
   long startY_steps = (long)(startY_mm * koef_y);
@@ -729,6 +755,84 @@ void moveParabola(float vertexX_mm, float vertexY_mm, float a, float width_mm, f
   
   s_up();
 }
+
+void drawTriangle(float cx, float cy, float side, float angle, float speed) {
+  float height = side * sqrt(3) / 2.0;
+  
+  float Ax_local = 0.0;
+  float Ay_local = height * 2.0 / 3.0;
+  float Bx_local = -side / 2.0;
+  float By_local = -height / 3.0;
+  float Cx_local = side / 2.0;
+  float Cy_local = -height / 3.0;
+  
+  float rad = angle * PI / 180.0;
+  float cosA = cos(rad);
+  float sinA = sin(rad);
+  
+  float Ax = cx + Ax_local * cosA - Ay_local * sinA;
+  float Ay = cy + Ax_local * sinA + Ay_local * cosA;
+  float Bx = cx + Bx_local * cosA - By_local * sinA;
+  float By = cy + Bx_local * sinA + By_local * cosA;
+  float Cx = cx + Cx_local * cosA - Cy_local * sinA;
+  float Cy = cy + Cx_local * sinA + Cy_local * cosA;
+  
+  s_up();
+  moveToPoint(Ax, Ay, speed);
+  s_down();
+  moveToPoint(Bx, By, speed);
+  moveToPoint(Cx, Cy, speed);
+  moveToPoint(Ax, Ay, speed);
+  s_up();
+  
+  float ABx = (Ax + Bx) / 2.0;
+  float ABy = (Ay + By) / 2.0;
+  float BCx = (Bx + Cx) / 2.0;
+  float BCy = (By + Cy) / 2.0;
+  float CAx = (Cx + Ax) / 2.0;
+  float CAy = (Cy + Ay) / 2.0;
+  
+  s_up();
+  moveToPoint(Cx, Cy, speed);
+  s_down();
+  moveToPoint(ABx, ABy, speed);
+  s_up();
+  
+  moveToPoint(Ax, Ay, speed);
+  s_down();
+  moveToPoint(BCx, BCy, speed);
+  s_up();
+  
+  moveToPoint(Bx, By, speed);
+  s_down();
+  moveToPoint(CAx, CAy, speed);
+  s_up();
+}
+
+void mark(){
+  moveBoth(15, -15, 10000, 0);
+  while(!isBothMoveComplete()){
+    delay(1);
+  }
+  s_down(); 
+  moveBoth(-30, 30, 10000, 0);
+  while(!isBothMoveComplete()){
+    delay(1);
+  }
+  s_up(); 
+  moveBoth(0, -30, 10000, 0); 
+  while(!isBothMoveComplete()){
+    delay(1);
+  }
+  s_down();
+  moveBoth(30, 30, 10000, 0); 
+  while(!isBothMoveComplete()){
+    delay(1);
+  }
+
+
+}
+
 
 ISR(TIMER2_COMPA_vect) {
   static unsigned long stepStartTimeX = 0;
@@ -1629,16 +1733,73 @@ delay(5000);
 }
 
 void program7() {
-  // moveSin(getPositionX(), getPositionY(), 50, 10, 2, 10000);
-  moveParabola(100.0, 100.0, 0.03, 90.0, 5000);
+   drawTriangle(0, 0, 80.0, 0.0, 7000);
 }
 
+bool st = 0;
+int repetitions = 0;
+int centrX[] = {0, 0};
+int centrY[] = {0, 0};
 void program8() {
-  moveBoth(40, 15, 2500, 0);
-  while (!isBothMoveComplete()) {
-    updateDisplay();
-    delay(1);
+  calibrationX();
+  moveToPoint(15, 10, 7000);
+  while (!isBothMoveComplete()) delay(1);
+
+  float centersX[5];
+  float centersY[5];
+  int found = 0;
+  int repetitions = 0;
+
+  while (found < 5) {
+    int st = 0;
+    int posX = 0, posY = 0, sum = 0;
+    int curX = 0;
+    int i;
+    
+    for (i = repetitions; i <= 16; i++) {
+      moveBoth(210, 0, 4000, 0);
+      while (!isBothMoveComplete()) {
+        if (sensor() < 50 && abs(getPositionX() - (float)curX) >= 2.0) {
+          curX = (int)getPositionX();
+          posX += curX;
+          posY += (int)getPositionY();
+          sum += 1;
+          st = 1;
+          digitalWrite(led, HIGH);
+          updateDisplay();
+        }
+        delay(1);
+        digitalWrite(led, LOW);
+      }
+      delay(100);
+
+      moveBoth(-210, 9.75, 4500, 0);
+      while (!isBothMoveComplete()) delay(1);
+      delay(200);
+      curX = 0;
+
+      if (st == 0 && sum > 0) {
+        centersX[found] = (float)posX / sum - 51.0;
+        centersY[found] = (float)posY / sum;
+        found++;
+        repetitions = i + 1;
+        break;
+      }
+      st = 0;
+    }
+    
+    if (i > 16) break;
   }
+
+  delay(1000);
+
+  s_down();
+  for (int n = 0; n < found; n++) {
+    moveToPoint(centersX[n], centersY[n], 8000);
+    while (!isBothMoveComplete()) delay(1);
+    drawCircle((int)getPositionX(), (int)getPositionY(), 4, 4000, 100);
+  }
+  s_up();
 }
 
 void program9() {
@@ -1662,24 +1823,113 @@ void program9() {
   }
 }
 
+int firstPos = 0;
+int secondPos = 0;
+int kordsX[] = {105, 105, 105, 63, 63, 63, 21, 21, 21};
+int kordsY[] = {35, 80, 125, 35, 80, 125, 35, 80, 125};
+int points[] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+int targetPoints[] = {0, 0, 0};
+int counter = 0;
+// int sum = 0;
+
 void program10() {
-  float centerX = getPositionX();
-  float centerY = getPositionY();
-  drawEllipse((int)centerX, (int)centerY, 75, 30, 4000, 36);
-  s_up();
+  calibrationX();
+  for (int i = 0; i <= 2; ++i){
+    moveToPoint(kordsX[i], kordsY[i], 10000);
+    points[i] = sensor() > 50 ? 0 : 1;
+    Serial.print(points[i]);
+  }
+  for (int i = 3; i <= 5; ++i){
+    moveToPoint(kordsX[i], kordsY[i], 10000);
+    points[i] = sensor() > 50 ? 0 : 1;
+    Serial.print(points[i]);
+  }
+  for (int i = 6; i <= 8; ++i){
+    moveToPoint(kordsX[i], kordsY[i], 10000);
+    points[i] = sensor() > 50 ? 0 : 1;
+    Serial.print(points[i]);
+  }
+  Serial.println();
+
+  if ((points[0] + points[1] + points[2]) == 2){
+    sum = points[1] + points[2] * 2;
+    targetPoints[counter] = 3 - sum;
+    counter += 1;
+    sum = 0;
+  }
+
+  if ((points[3] + points[4] + points[5]) == 2){
+    sum = points[3] * 3 - points[4] * 4 + points[5] * 5;
+    targetPoints[counter] = 12 - sum;
+    counter += 1;
+    sum = 0;
+  }
+  
+  if ((points[6] + points[7] + points[8]) == 2){
+    sum = points[6] * 6 - points[7] * 7 + points[8] * 8;
+    targetPoints[counter] = 21 - sum;
+    counter += 1;
+    sum = 0;
+  }
+
+  if ((points[0] + points[3] + points[6]) == 2){
+    sum = points[3] * 3 + points[6] * 6;
+    targetPoints[counter] = 9 - sum;
+    counter += 1;
+    sum = 0;
+  }
+
+  if ((points[1] + points[4] + points[7]) == 2){
+    sum = points[1] * 1 - points[7] * 7 + points[4] * 4;
+    targetPoints[counter] = 12 - sum;
+    counter += 1;
+    sum = 0;
+  }
+
+  if ((points[2] + points[5] + points[8]) == 2){
+    sum = points[2] * 2 - points[5] * 5 + points[8] * 8;
+    targetPoints[counter] = 15 - sum;
+    counter += 1;
+    sum = 0;
+  }
+
+  if ((points[0] + points[4] + points[8]) == 2){
+    sum = points[4] * 4 + points[8] * 8;
+    targetPoints[counter] = 12 - sum;
+    counter += 1;
+    sum = 0;
+  }
+
+  if ((points[2] + points[4] + points[6]) == 2){
+    sum = points[2] * 2 - points[4] * 4 + points[6] * 6;
+    targetPoints[counter] = 12 - sum;
+    counter += 1;
+    sum = 0;
+  }
+  
+  for (int i = 0; i <= counter - 1; ++i){
+    moveToPoint(kordsX[targetPoints[i]] - 51, kordsY[targetPoints[i]], 10000);
+    // moveToPoint(-15 + getPositionX(), 15 + getPositionY(), 6000);
+    // s_down();
+    // moveToPoint(30 + getPositionX(), -30 + getPositionY(), 6000);
+    // s_up();
+    // moveToPoint(getPositionX(), 30 + getPositionY(), 6000);
+    // s_down();
+    // moveToPoint(30 + getPositionX(), 30 + getPositionY(), 6000);
+    mark();
+    s_up();
+  }
 }
 
 void program11() {
-  float centerX = getPositionX();
-  float centerY = getPositionY();
-  int radius = 50;
-  float speed = 8000;
-  drawCircle((int)centerX, (int)centerY, radius, speed, 2000);
-  s_up();
+  while(1){
+    Serial.println(sensor());
+  }
 }
 
 void loop() {
   selectedProgram = selectProgram();
+  updateDisplay();
   s_up();
   // calibration();
   switch (selectedProgram) {
